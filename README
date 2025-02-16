@@ -1,0 +1,6 @@
+Testing serializable transactions with https://www.sectorlabs.ro/blog/2024/10/11/serializable-transactions-with-django-and-postgresql#:~:text=Confirming%20serializable%20transactions,user_id%3D1)%20%3D%3D%20-500
+
+Run with:
+
+python3 -m venv venv && ./venv/bin/pip install django psycopg && initdb data && postgres -D data &
+./venv/bin/python manage.py test --keepdb
