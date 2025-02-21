@@ -57,17 +57,21 @@ class LedgerTests(TransactionTestCase):
         User.objects.create(pk=1, username="foo")
         Ledger.objects.create(user_id=1, amount=500)
 
-        # Use an even to control the order in which the transactions
+        # Use an event to control the order in which the transactions
         # will commit and make sure they commit at the same time.
         waiter = threading.Event()
 
         def _concurrent_transaction():
-            with transaction.atomic():
-                with connection.cursor() as cursor:
-                    cursor.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-
-                withdraw(user_id=1, amount=500)
-                waiter.set()
+            try:
+                with transaction.atomic():
+                    with connection.cursor() as cursor:
+                        cursor.execute(
+                            "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+                        )
+                    withdraw(user_id=1, amount=500)
+                    waiter.set()
+            except OperationalError as error:
+                self.assertIsInstance(error.__cause__, SerializationFailure)
 
         # Start a transaction in a separate thread
         thread = threading.Thread(target=_concurrent_transaction)
@@ -75,16 +79,16 @@ class LedgerTests(TransactionTestCase):
 
         # Start another transaction and signal the threaded
         # one to commit at the same time.
-        # with self.assertRaises(SerializationFailure) as e:
-        with transaction.atomic():
-            with connection.cursor() as cursor:
-                cursor.execute("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE")
-
-            withdraw(user_id=1, amount=500)
-            waiter.wait()
-
-        # Assert that the transaction was aborted due to a serialization failure
-        # assert isinstance(e.exception.__cause__, psycopg2.errors.SerializationFailure)
+        try:
+            with transaction.atomic():
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
+                    )
+                withdraw(user_id=1, amount=500)
+                waiter.wait()
+        except OperationalError as error:
+            self.assertIsInstance(error.__cause__, SerializationFailure)
 
         # Wait for the concurrent transaction to finish/commit
         thread.join()
