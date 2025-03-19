@@ -9,8 +9,6 @@ from psycopg.errors import SerializationFailure
 
 from ledger.models import Ledger
 
-# Create your tests here.
-
 def balance(user_id: int) -> int:
     return Ledger.objects.filter(user_id=1).aggregate(balance=Sum("amount"))["balance"]
 
@@ -26,29 +24,20 @@ class LedgerTests(TransactionTestCase):
     def test_ledger_race_condition(self):
         User.objects.create(pk=1, username="foo")
         Ledger.objects.create(user_id=1, amount=500)
+        barrier = threading.Barrier(2)
 
-        # Use an event to control the order in which the transactions
-        # will commit and make sure they commit at the same time.
-        waiter = threading.Event()
-
-        def _concurrent_transaction():
+        def concurrent_transaction():
             with transaction.atomic():
                 withdraw(user_id=1, amount=500)
-                waiter.set()
-            connection.cursor().close()
+                barrier.wait()
+            connection.close()
 
-        # Start a transaction in a separate thread
-        thread = threading.Thread(target=_concurrent_transaction)
-        thread.start()
-
-        # Start another transaction and signal the threaded
-        # one to commit at the same time.
-        with transaction.atomic():
-            withdraw(user_id=1, amount=500)
-            waiter.wait()
-
-        # Wait for the concurrent transaction to finish/commit
-        thread.join()
+        thread_one = threading.Thread(target=concurrent_transaction)
+        thread_one.start()
+        thread_two = threading.Thread(target=concurrent_transaction)
+        thread_two.start()
+        thread_one.join()
+        thread_two.join()
 
         # Confirm that we withdrew more money than the user had
         self.assertEqual(balance(user_id=1), -500)
@@ -56,12 +45,9 @@ class LedgerTests(TransactionTestCase):
     def test_ledger_concurrency_safe(self):
         User.objects.create(pk=1, username="foo")
         Ledger.objects.create(user_id=1, amount=500)
+        barrier = threading.Barrier(2)
 
-        # Use an event to control the order in which the transactions
-        # will commit and make sure they commit at the same time.
-        waiter = threading.Event()
-
-        def _concurrent_transaction():
+        def concurrent_transaction():
             try:
                 with transaction.atomic():
                     with connection.cursor() as cursor:
@@ -69,29 +55,19 @@ class LedgerTests(TransactionTestCase):
                             "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
                         )
                     withdraw(user_id=1, amount=500)
-                    waiter.set()
+                    party = barrier.wait()
             except OperationalError as error:
+                print(f"{party=}")
                 self.assertIsInstance(error.__cause__, SerializationFailure)
+            finally:
+                connection.close()
 
-        # Start a transaction in a separate thread
-        thread = threading.Thread(target=_concurrent_transaction)
-        thread.start()
-
-        # Start another transaction and signal the threaded
-        # one to commit at the same time.
-        try:
-            with transaction.atomic():
-                with connection.cursor() as cursor:
-                    cursor.execute(
-                        "SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"
-                    )
-                withdraw(user_id=1, amount=500)
-                waiter.wait()
-        except OperationalError as error:
-            self.assertIsInstance(error.__cause__, SerializationFailure)
-
-        # Wait for the concurrent transaction to finish/commit
-        thread.join()
+        thread_one = threading.Thread(target=concurrent_transaction)
+        thread_one.start()
+        thread_two = threading.Thread(target=concurrent_transaction)
+        thread_two.start()
+        thread_one.join()
+        thread_two.join()
 
         # Confirm there was no overdraft
         self.assertEqual(balance(user_id=1), 0)
