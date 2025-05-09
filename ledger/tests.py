@@ -10,12 +10,12 @@ from psycopg.errors import SerializationFailure
 from ledger.models import Ledger
 
 def balance(user_id: int) -> int:
-    return Ledger.objects.filter(user_id=1).aggregate(balance=Sum("amount"))["balance"]
+    return Ledger.objects.filter(user_id=user_id).aggregate(balance=Sum("amount"))["balance"]
 
 def withdraw(user_id: int, amount: int) -> None:
     with transaction.atomic():
         if balance(user_id) >= amount:
-            Ledger.objects.create(user_id=1, amount=-amount)
+            Ledger.objects.create(user_id=user_id, amount=-amount)
         else:
             raise ValueError("Insufficient balance")
 
